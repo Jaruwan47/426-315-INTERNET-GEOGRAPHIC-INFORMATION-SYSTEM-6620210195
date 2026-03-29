@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>แผนที่จังหวัดในประเทศไทย</title>
+
+<style>
+html,body{margin:0;height:100%;font-family:Inter,Segoe UI}
+#map{position:absolute;left:360px;right:0;top:0;bottom:0}
+#sidebar{
+position:absolute;left:0;top:0;bottom:0;width:360px;
+background:white;box-shadow:2px 0 12px rgba(0,0,0,.15);
+display:flex;flex-direction:column;
+}
+.header{padding:20px;font-size:20px;font-weight:600;border-bottom:1px solid #eee}
+.content{padding:15px;overflow:auto;flex:1}
+.card{
+background:#f7f9fc;padding:12px;border-radius:10px;
+margin-bottom:15px;box-shadow:0 2px 6px rgba(0,0,0,.08);
+}
+input,select,button{
+width:100%;padding:10px;border-radius:8px;border:1px solid #ccc;margin-top:6px;
+}
+button{background:#1976d2;color:white;border:none;cursor:pointer}
+button:hover{background:#125ea8}
+</style>
+
+<script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
+</head>
+
+<body>
+
+<div id="sidebar">
+<div class="header">แผนที่แสดงจังหวัดในประเทศไทย</div>
+<div class="content">
+
+<div class="card">
+<b>ความโปร่งใสของ Layer </b>
+<input type="range" min="0" max="1" step="0.1" value="0.6" id="opacitySlider">
+</div>
+
+<div class="card">
+<b>ค้นหาจังหวัด</b>
+<input id="searchBox" placeholder="พิมพ์ชื่อจังหวัด">
+<button onclick="searchProvince()">ค้นหา</button>
+<button onclick="clearSelection()">ล้างค่าที่เลือก</button>
+</div>
+
+<div class="card">
+<b>สีของแผนที่</b>
+<select id="colorSel">
+<option value="">ต้นฉบับ</option>
+<option value="province">แสดงสีตามจังหวัด</option>
+<option value="region">แสดงสีตามภูมิภาค</option>
+</select>
+</div>
+
+<div class="card"><b>สถานะ</b><div id="status"></div></div>
+<div id="info" class="card">เลือกจังหวัดเพื่อแสดงรายละเอียด</div>
+
+</div>
+</div>
+
+<div id="map"></div>
+
+<script>
+
+let map;
+let features=[];
+let boundsAll;
+let opacity=0.6;
+let currentMode="";
+
+const FIELD_PROV="pv_tn";
+const FIELD_REGION="re_royin";
+
+/* ⭐ แยก palette ชัดเจน */
+const provincePalette=[
+"#d73027","#fc8d59","#fee090",
+"#91bfdb","#4575b4","#7b3294",
+"#c51b7d","#fdb863","#5e4fa2"
+];
+
+const regionPalette=[
+"#8dd3c7","#ffffb3","#bebada",
+"#fb8072","#80b1d3","#fdb462",
+"#b3de69","#fccde5"
+];
+
+function initMap(){
+map=new google.maps.Map(document.getElementById("map"),{
+zoom:6,center:{lat:13,lng:100}
+});
+loadLayer("./province.zip");
+
+document.getElementById("opacitySlider").oninput=e=>{
+opacity=e.target.value;
+applyCurrentStyle();
+};
+
+document.getElementById("colorSel").onchange=e=>{
+currentMode=e.target.value;
+applyCurrentStyle();
+};
+}
+
+async function loadLayer(url){
+const geojson=await shp(url);
+boundsAll=new google.maps.LatLngBounds();
+
+map.data.addGeoJson(geojson);
+
+map.data.forEach(f=>{
+features.push(f);
+processPoints(f.getGeometry(), boundsAll.extend, boundsAll);
+});
+
+map.fitBounds(boundsAll);
+applyCurrentStyle();
+
+document.getElementById("status").innerHTML="จำนวณจังหวัด : "+features.length;
+
+map.data.addListener("click",e=>{
+showInfo(e.feature);
+zoomFeature(e.feature);
+});
+}
+
+function applyCurrentStyle(){
+if(currentMode==="province") colorProvince();
+else if(currentMode==="region") colorRegion();
+else map.data.setStyle(defaultStyle);
+}
+
+function defaultStyle(){
+return{
+fillColor:"#4caf50",
+strokeColor:"#333",
+strokeWeight:1,
+fillOpacity:opacity,
+visible:true
+};
+}
+
+/* ⭐ Province graph coloring */
+function colorProvince(){
+
+let boxes=[];
+
+features.forEach(f=>{
+const b=new google.maps.LatLngBounds();
+processPoints(f.getGeometry(), b.extend, b);
+boxes.push({feature:f,bounds:b,color:null});
+});
+
+boxes.forEach((p,i)=>{
+let used=[];
+boxes.forEach((q,j)=>{
+if(i!==j && p.bounds.intersects(q.bounds)){
+if(q.color) used.push(q.color);
+}
+});
+p.color=provincePalette.find(c=>!used.includes(c)) || provincePalette[0];
+});
+
+map.data.setStyle(f=>{
+let obj=boxes.find(o=>o.feature===f);
+return{
+fillColor:obj.color,
+strokeColor:"#000",
+strokeWeight:1,
+fillOpacity:opacity,
+visible:true
+};
+});
+}
+
+/* ⭐ Region graph coloring */
+function colorRegion(){
+
+let regionBoxes={};
+
+features.forEach(f=>{
+let r=f.getProperty(FIELD_REGION);
+if(!regionBoxes[r]){
+const b=new google.maps.LatLngBounds();
+regionBoxes[r]={bounds:b,color:null};
+}
+processPoints(f.getGeometry(), regionBoxes[r].bounds.extend, regionBoxes[r].bounds);
+});
+
+let keys=Object.keys(regionBoxes);
+
+keys.forEach((k,i)=>{
+let used=[];
+keys.forEach((k2,j)=>{
+if(i!==j && regionBoxes[k].bounds.intersects(regionBoxes[k2].bounds)){
+if(regionBoxes[k2].color) used.push(regionBoxes[k2].color);
+}
+});
+regionBoxes[k].color=regionPalette.find(c=>!used.includes(c)) || regionPalette[0];
+});
+
+map.data.setStyle(f=>{
+let r=f.getProperty(FIELD_REGION);
+return{
+fillColor:regionBoxes[r].color,
+strokeColor:"#000",
+strokeWeight:1,
+fillOpacity:opacity,
+visible:true
+};
+});
+}
+
+function searchProvince(){
+let key=document.getElementById("searchBox").value.toLowerCase();
+const b=new google.maps.LatLngBounds();
+let count=0;
+
+features.forEach(f=>{
+let name=(f.getProperty(FIELD_PROV)+"").toLowerCase();
+if(name.includes(key)){
+map.data.overrideStyle(f,{visible:true,strokeWeight:3});
+processPoints(f.getGeometry(), b.extend, b);
+showInfo(f);
+count++;
+}else{
+map.data.overrideStyle(f,{visible:false});
+}
+});
+
+if(!b.isEmpty()) map.fitBounds(b);
+document.getElementById("status").innerHTML="จังหวัดที่เลือก : "+count;
+}
+
+function clearSelection(){
+map.data.revertStyle();
+applyCurrentStyle();
+map.fitBounds(boundsAll);
+document.getElementById("status").innerHTML="จำนวณจังหวัด : "+features.length;
+document.getElementById("info").innerHTML="เลือกจังหวัดเพื่อแสดงรายละเอียด";
+document.getElementById("searchBox").value="";
+}
+
+function zoomFeature(f){
+const b=new google.maps.LatLngBounds();
+processPoints(f.getGeometry(), b.extend, b);
+map.fitBounds(b);
+}
+
+function showInfo(f){
+let html="";
+f.forEachProperty((v,k)=>{
+html+="<b>"+k+"</b> : "+v+"<br>";
+});
+document.getElementById("info").innerHTML=html;
+}
+
+function processPoints(geometry, callback, thisArg){
+if(geometry instanceof google.maps.LatLng){
+callback.call(thisArg, geometry);
+}
+else if(geometry instanceof google.maps.Data.Point){
+callback.call(thisArg, geometry.get());
+}
+else{
+geometry.getArray().forEach(g=>{
+processPoints(g, callback, thisArg);
+});
+}
+}
+
+</script>
+<script async defer
+src="https://maps.googleapis.com/maps/api/js?key=AIzaSyC5l0aPyGFqiqY5DpqOYf-8YhN_eYHHobU&callback=initMap">
+</script>
+
+</body>
+</html>
+
+
